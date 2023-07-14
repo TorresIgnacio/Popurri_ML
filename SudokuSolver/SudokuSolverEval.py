@@ -12,9 +12,9 @@ BATCH_SIZE = 640
 TEST_SIZE = 0.2
 VAL_SIZE = 0.2
 DATA_LEN = 1000000
-NUMBER_OF_TESTS = 1
+NUMBER_OF_TESTS = 10
 NUMBER_OF_BATCHES = 1
-MODEL_PATH = "./SudokuSolverMostAccurateModel"
+MODEL_PATH = "./SudokuSolver/Models/SudokuSolverMostAccurateModel"
 
 
 class DataGenerator(keras.utils.Sequence):
@@ -137,7 +137,7 @@ def eval_score(y_pred, y_true, title):
 
 
 def main():
-    sudoku_df = pd.read_csv('./sudoku.csv')
+    sudoku_df = pd.read_csv('./datasets/sudoku.csv')
     print(sudoku_df.head())
     print(sudoku_df.info())
 

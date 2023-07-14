@@ -1,7 +1,7 @@
 from keras.layers import LSTM, Dense, Embedding, Input
 from keras.models import Model
 from keras.preprocessing.text import Tokenizer
-from keras.utils import pad_sequences, to_categorical
+from keras.utils import pad_sequences, to_categorical, Sequence
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,13 +19,17 @@ except:
 # CONSTANTS
 
 MAX_VOCAB_SIZE = 20000
+MAX_VOCAB_SIZE_SPANISH = 50000
 MAX_SEQUENCE_LENGTH = 100
-EMBEDDING_DIM = 200
+EMBEDDING_DIM = 300
+EMBEDDING_DIM_SPANISH = 300
 LATENT_DIM = 256
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 VALIDATION_SPLIT = 0.2
-EPOCHS = 30
-NUM_SAMPLES = 10000
+EPOCHS = 20
+NUM_SAMPLES = 25000
+
+MODEL_PATH = './models/translator/complete_model2.keras'
 
 # load in the data
 input_texts = []
@@ -89,8 +93,8 @@ decoder_inputs = pad_sequences(
 decoder_targets = pad_sequences(target_sequences,
                                 maxlen=max_len_target,
                                 padding='post')
-# load in pre-trained word vectors
 
+# load in pre-trained english word vectors
 word2vec = {}
 with open(os.path.join('./datasets/glove.6B.%sd.txt' % EMBEDDING_DIM), encoding='utf8') as f:
     for line in f:
@@ -113,26 +117,52 @@ for word, i in word2idx_inputs.items():
 embeding_layer = Embedding(num_words, EMBEDDING_DIM, weights=[
                            embedding_matrix], input_length=max_len_input)
 
-# # one hot encoding
-# decoder_targets_one_hot = to_categorical(decoder_targets)
+
+# load in pre-trained spanish word vectors
+word2vec_spanish = {}
+with open(os.path.join('./datasets/wiki.es.vec'), encoding='utf8') as f:
+    f.readline()
+    for i, line in enumerate(f):
+        if i >= MAX_VOCAB_SIZE_SPANISH:
+            break
+        values = line.split()
+        word = values[0]
+        vec = np.asarray(values[1:], dtype='float32')
+        word2vec_spanish[word] = vec
+
+# prepare embedding matrix
+num_words_spanish = min(MAX_VOCAB_SIZE_SPANISH, len(word2vec_spanish) + 1)
+embedding_matrix_target = np.zeros((num_words_spanish, EMBEDDING_DIM_SPANISH))
+for word, i in word2idx_outputs.items():
+    if i < MAX_VOCAB_SIZE_SPANISH:
+        vec = word2vec_spanish.get(word)
+        if vec is not None:
+            embedding_matrix_target[i] = vec
+
+print("number of words = ", len(word2vec_spanish))
+print("number of samples = ", NUM_SAMPLES)
 
 # create targets, since we cannot use sparse
 # categorical cross entropy when we have sequences
+# one hot encoding
+
 num_words_output = len(word2idx_outputs) + 1
-decoder_targets_one_hot = np.zeros(
-    (
-        len(input_texts),
-        max_len_target,
-        num_words_output
-    ),
-    dtype='float32'
-)
+decoder_targets_one_hot = to_categorical(decoder_targets)
+
+# decoder_targets_one_hot = np.zeros(
+#     (
+#         len(input_texts),
+#         max_len_target,
+#         num_words_output
+#     ),
+#     dtype='float32'
+# )
 
 # assign the values
-for i, d in enumerate(decoder_targets):
-    for t, word in enumerate(d):
-        if word != 0:
-            decoder_targets_one_hot[i, t, word] = 1
+# for i, d in enumerate(decoder_targets):
+#     for t, word in enumerate(d):
+#         if word != 0:
+#             decoder_targets_one_hot[i, t, word] = 1
 
 
 # Build Model
@@ -144,7 +174,8 @@ encoder_outputs, h, c = encoder(encoder_outputs)
 
 # Decoder
 decoder_inputs_placeholder = Input(shape=(max_len_target,))
-decoder_embedding = Embedding(num_words_output, EMBEDDING_DIM)
+decoder_embedding = Embedding(num_words_spanish, EMBEDDING_DIM_SPANISH, weights=[
+                              embedding_matrix_target])
 decoder_inputs_x = decoder_embedding(decoder_inputs_placeholder)
 decoder = LSTM(LATENT_DIM, return_sequences=True, return_state=True)
 decoder_outputs, _, _ = decoder(decoder_inputs_x, initial_state=[h, c])
@@ -154,107 +185,26 @@ decoder_outputs = decoder_dense(decoder_outputs)
 model = Model([encoder_inputs_placeholder,
               decoder_inputs_placeholder], decoder_outputs)
 
-
-def custom_loss(y_true, y_pred):
-    # both are shape N x T x K
-    mask = K.cast(y_true > 0, dtype='float32')
-    out = mask * y_true * K.log(y_pred)
-    return -K.sum(out) / K.sum(mask)
-
-
-def acc(y_true, y_pred):
-    targ = K.argmax(y_true, axis=-1)
-    pred = K.argmax(y_pred, axis=-1)
-    correct = K.cast(K.equal(targ, pred), dtype='float32')
-
-    mask = K.cast(K.greater(targ, 0), dtype='float32')
-    n_correct = K.sum(mask * correct)
-    n_total = K.sum(mask)
-    return n_correct / n_total
-
-
-# model.compile(optimizer='adam', loss=custom_loss, metrics=[acc])
+# Compile the model and train it
+# With hot encoding
 model.compile(
     optimizer='rmsprop',
     loss='categorical_crossentropy',
     metrics=['accuracy']
 )
+# Without hot encoding
+# model.compile(
+#     optimizer='adam',
+#     loss='sparse_categorical_crossentropy',
+#     metrics=['sparse_categorical_accuracy']
+# )
 
 r = model.fit([encoder_inputs, decoder_inputs], decoder_targets_one_hot,
-              batch_size=BATCH_SIZE, validation_split=0.2, epochs=EPOCHS, verbose="2")
+              batch_size=BATCH_SIZE, validation_split=0.2, epochs=EPOCHS, shuffle=True, use_multiprocessing=True, verbose=2)
 
 plt.plot(r.history['loss'], label='loss')
 plt.plot(r.history['val_loss'], label='val_loss', color='red')
 plt.legend()
 plt.show()
 
-model.save('s2s.h5')
-
-
-# Predictions
-
-
-encoder_model = Model(encoder_inputs_placeholder, [h, c])
-
-decoder_state_input_h = Input(shape=(LATENT_DIM,))
-decoder_state_input_c = Input(shape=(LATENT_DIM,))
-decoder_states_inputs = [decoder_state_input_h, decoder_state_input_c]
-
-decoder_inputs_single = Input(shape=(1,))
-decoder_inputs_single_x = decoder_embedding(decoder_inputs_single)
-
-decoder_outputs, h, c = decoder(
-    decoder_inputs_single_x, initial_state=decoder_states_inputs)
-
-decoder_states = [h, c]
-decoder_outputs = decoder_dense(decoder_outputs)
-
-decoder_model = Model([decoder_inputs_single] +
-                      decoder_states_inputs, [decoder_outputs] + decoder_states)
-
-idx2word_eng = {v: k for k, v in word2idx_inputs.items()}
-idx2word_trans = {v: k for k, v in word2idx_outputs.items()}
-
-
-def decode_sequence(input_seq):
-    # Encode input as state vectors
-    states_value = encoder_model.predict(input_seq)
-
-    # Empty target sequence of length 1
-    target_seq = np.zeros((1, 1))
-
-    target_seq[0, 0] = word2idx_outputs['<sos>']
-    eos = word2idx_outputs['<eos>']
-
-    # Translation
-    output_sentence = []
-    for _ in range(max_len_target):
-        output_tokens, h, c = decoder_model.predict(
-            [target_seq] + states_value)
-
-        idx = np.argmax(output_tokens[0, 0, :])
-        print("idx = ", idx)
-        if eos == idx:
-            break
-
-        word = ''
-        if idx > 0:
-            word = idx2word_trans[idx]
-            output_sentence.append(word)
-            print("word = ", word)
-
-        target_seq[0, 0] = idx
-        states_value = [h, c]
-
-    return ' '.join(output_sentence)
-
-
-while True:
-    i = np.random.choice(len(input_texts))
-    input_seq = encoder_inputs[i: i+1]
-    translation = decode_sequence(input_seq)
-    print(f"-\nInput: {input_texts[i]}\nTranslation: {translation}")
-
-    ans = input("Continue? [Y/n]")
-    if ans and ans.lower().startswith('n'):
-        break
+model.save(MODEL_PATH)
