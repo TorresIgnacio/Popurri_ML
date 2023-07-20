@@ -1,18 +1,22 @@
+import matplotlib.pyplot as plt
 from keras.backend import flatten
 import tensorflow as tf
 import numpy as np
 from tensorflow.python.keras import backend as K
 from keras.models import load_model, Model
-from keras.utils import pad_sequences
+from keras.utils import pad_sequences, to_categorical
 from keras.preprocessing.text import Tokenizer
 from keras.layers import Concatenate, Dense, Dot, Input, Layer, RepeatVector
 
 MODEL_PATH = './models/translator/translator_with_attention2.keras'
+LOSS_PATH = './evaluation/translator_with_attention_loss_40_to_60.png'
 
 NUM_TRAINING_SAMPLES = 25000
 NUM_TEST_SAMPLES = 10000
 MAX_VOCAB_SIZE = 20000
 MAX_SEQUENCE_LENGTH = 100
+BATCH_SIZE = 256
+EPOCHS = 20
 
 
 class Slice(Layer):
@@ -131,95 +135,28 @@ max_len_input = min(max_len_input, MAX_SEQUENCE_LENGTH)
 encoder_inputs = pad_sequences(input_sequences,
                                maxlen=6)
 
-# Models
+max_len_target = len(max(target_sequences, key=len))
+max_len_target = min(max_len_target, MAX_SEQUENCE_LENGTH)
+decoder_inputs = pad_sequences(
+    target_sequences_inputs, maxlen=max_len_target, padding='post')
 
-print(model.get_config())
+decoder_targets = pad_sequences(target_sequences,
+                                maxlen=max_len_target,
+                                padding='post')
+decoder_targets_one_hot = to_categorical(decoder_targets)
 
-# Get layers from model
-encoder = model.get_layer('encoder_lstm')
-encoder_inputs_placeholder = model.get_layer('encoder_input').input
-embedding_layer = model.get_layer('embedding')
 initial_s = model.get_layer('s0')
 latent_dim_decoder = initial_s.input.shape[1]
-initial_s = initial_s.output
-initial_c = model.get_layer('c0').output
-decoder = model.get_layer('decoder_lstm')
-decoder_embedding = model.get_layer('decoder_embedding')
-decoder_lstm = model.get_layer('decoder_lstm')
-decoder_dense = model.get_layer('decoder_dense')
+initial_c = model.get_layer('c0')
+z = np.zeros((len(encoder_inputs), latent_dim_decoder))
 
-# Build encoder model
-x = embedding_layer(encoder_inputs_placeholder)
-encoder_outputs = encoder(x)
-encoder_model = Model(encoder_inputs_placeholder, encoder_outputs)
+r = model.fit([encoder_inputs, decoder_inputs, z, z], decoder_targets_one_hot,
+              batch_size=BATCH_SIZE, validation_split=0.2, epochs=EPOCHS, shuffle=True, use_multiprocessing=True, verbose=2)
 
+plt.plot(r.history['loss'], label='loss')
+plt.plot(r.history['val_loss'], label='val_loss', color='red')
+plt.legend()
 
-# Build attention layers
-attn_repeat_layer = RepeatVector(max_len_input)
-attn_concat_layer = Concatenate(axis=-1)
-attn_dense1 = Dense(10, activation='tanh')
-attn_dense2 = Dense(1, activation=softmax_over_time)
-attn_dot = Dot(axes=1)  # to perform the weighted sum of alpha[t] * h[t]
-
-
-def one_step_attention(h, st_1):
-    st_1 = attn_repeat_layer(st_1)
-    x = attn_concat_layer([h, st_1])
-    x = attn_dense1(x)
-    alphas = attn_dense2(x)
-    context = attn_dot([alphas, h])
-    return context
-
-
-# Build decoder Model
-encoder_outputs_as_input = Input(
-    shape=(max_len_input, encoder.output.shape[2]))  # Encoder.output.shape[2] = LATENT_DIM * 2
-decoder_inputs_single = Input(shape=(1,))
-decoder_inputs_single_x = decoder_embedding(decoder_inputs_single)
-context_last_word_concat_layer = Concatenate(
-    axis=2, name='decoder_concatenate')
-
-context = one_step_attention(encoder_outputs_as_input, initial_s)
-decoder_lstm_input = context_last_word_concat_layer(
-    [context, decoder_inputs_single_x])
-
-o, s, c = decoder_lstm(decoder_lstm_input, initial_state=[
-    initial_s, initial_c])
-decoder_outputs = decoder_dense(o)
-
-decoder_model = Model(
-    inputs=[
-        decoder_inputs_single,
-        encoder_outputs_as_input,
-        initial_s,
-        initial_c
-    ],
-    outputs=[decoder_outputs, s, c]
-)
-
-idx2word_eng = {v: k for k, v in word2idx_inputs.items()}
-idx2word_trans = {v: k for k, v in word2idx_outputs.items()}
-
-while True:
-    i = np.random.choice(len(input_texts))
-    input_seq = encoder_inputs[i: i+1]
-    translation = decode_sequence(
-        input_seq, idx2word_trans=idx2word_trans, latent_dim_decoder=latent_dim_decoder)
-    print(f"-\nInput: {input_texts[i]}\nTranslation: {translation}")
-
-    ans = input("Continue? [Y/n]")
-    if ans and ans.lower().startswith('n'):
-        break
-
-while True:
-    input_text = [input("Ingresar frase en ingles\n")]
-    input_seq = tokenizer_inputs.texts_to_sequences(input_text)
-    input_seq = pad_sequences(input_seq, maxlen=max_len_input)
-
-    translation = decode_sequence(
-        input_seq, idx2word_trans=idx2word_trans, latent_dim_decoder=latent_dim_decoder)
-    print(f"-\nInput: {input_text}\nTranslation: {translation}")
-
-    ans = input("Continue? [Y/n]")
-    if ans and ans.lower().startswith('n'):
-        break
+plt.savefig(LOSS_PATH)
+model.save(MODEL_PATH)
+plt.show()

@@ -1,5 +1,6 @@
+import tensorflow as tf
 from tensorflow.python.keras import backend as K
-from keras.layers import LSTM, Concatenate, Dense, Embedding, Input, Bidirectional, Lambda, RepeatVector, Dot
+from keras.layers import LSTM, Concatenate, Dense, Embedding, Input, Bidirectional, Lambda, Layer, RepeatVector, Dot
 from keras.models import Model
 from keras.preprocessing.text import Tokenizer
 from keras.utils import pad_sequences, to_categorical, Sequence
@@ -32,6 +33,25 @@ EPOCHS = 20
 NUM_SAMPLES = 25000
 
 MODEL_PATH = './models/translator/translator_with_attention2.keras'
+
+
+class Slice(Layer):
+    def __init__(self, begin, size, **kwargs):
+        super(Slice, self).__init__(**kwargs)
+        self.begin = begin
+        self.size = size
+
+    def get_config(self):
+
+        config = super().get_config().copy()
+        config.update({
+            'begin': self.begin,
+            'size': self.size,
+        })
+        return config
+
+    def call(self, inputs):
+        return tf.slice(inputs, self.begin, self.size)
 
 
 def softmax_over_time(x):
@@ -228,12 +248,14 @@ c = initial_c
 
 outputs = []
 
-for t in range(max_len_target):  # Ty times
+for target in range(max_len_target):  # Ty times
     context = one_step_attention(encoder_outputs, s)
 
     # Necesitamos una nueva layer para cada Ty
-    selector = Lambda(lambda x: x[:, t:t+1], name=f'selector_{t}')
+    selector = Slice(begin=[0, target, 0],
+                     size=[-1, 1, -1], name=f'selector_{target}')
     xt = selector(decoder_inputs_x)
+    print("xt = ", xt)
 
     # Combine
     decoder_lstm_input = context_last_word_concat_layer([context, xt])
