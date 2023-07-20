@@ -31,7 +31,7 @@ VALIDATION_SPLIT = 0.2
 EPOCHS = 20
 NUM_SAMPLES = 25000
 
-MODEL_PATH = './models/translator/complete_model2.keras'
+MODEL_PATH = './models/translator/translator_with_attention2.keras'
 
 
 def softmax_over_time(x):
@@ -181,7 +181,7 @@ encoder_inputs_placeholder = Input(
     shape=(max_len_input,), name='encoder_input')
 encoder_outputs = embeding_layer(encoder_inputs_placeholder)
 encoder = Bidirectional(
-    LSTM(units=LATENT_DIM, return_sequences=True, name='encoder_lstm'))
+    LSTM(units=LATENT_DIM, return_sequences=True), name='encoder_lstm')
 encoder_outputs = encoder(encoder_outputs)
 
 
@@ -205,14 +205,15 @@ def one_step_attention(h, st_1):
 
 
 ######### DECODER LAYERS #########
-decoder_inputs_placeholder = Input(shape=(max_len_target,))
+decoder_inputs_placeholder = Input(
+    shape=(max_len_target,), name='decoder_input')
 decoder_embedding = Embedding(num_words_spanish, EMBEDDING_DIM_SPANISH, weights=[
                               embedding_matrix_target], name='decoder_embedding')
 decoder_inputs_x = decoder_embedding(decoder_inputs_placeholder)
 decoder_lstm = LSTM(units=LATENT_DIM_DECODER,
                     return_state=True, name='decoder_lstm')
-decoder_dense = LSTM(units=num_words_output,
-                     activation='softmax', name='decoder_dense')
+decoder_dense = Dense(units=num_words_output,
+                      activation='softmax', name='decoder_dense')
 
 initial_s = Input(shape=(LATENT_DIM_DECODER,), name='s0')
 initial_c = Input(shape=(LATENT_DIM_DECODER,), name='c0')
@@ -231,7 +232,7 @@ for t in range(max_len_target):  # Ty times
     context = one_step_attention(encoder_outputs, s)
 
     # Necesitamos una nueva layer para cada Ty
-    selector = Lambda(lambda x: x[:, t:t+1])
+    selector = Lambda(lambda x: x[:, t:t+1], name=f'selector_{t}')
     xt = selector(decoder_inputs_x)
 
     # Combine
@@ -282,6 +283,7 @@ model.compile(
 
 z = np.zeros((len(encoder_inputs), LATENT_DIM_DECODER))
 model.summary()
+print(model.get_config())
 r = model.fit([encoder_inputs, decoder_inputs, z, z], decoder_targets_one_hot,
               batch_size=BATCH_SIZE, validation_split=0.2, epochs=EPOCHS, shuffle=True, use_multiprocessing=True, verbose=2)
 
