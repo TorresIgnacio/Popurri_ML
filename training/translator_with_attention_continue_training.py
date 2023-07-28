@@ -1,22 +1,29 @@
+import json
 import matplotlib.pyplot as plt
 from keras.backend import flatten
 import tensorflow as tf
 import numpy as np
 from tensorflow.python.keras import backend as K
+from keras.callbacks import ModelCheckpoint
 from keras.models import load_model, Model
 from keras.utils import pad_sequences, to_categorical
-from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.text import Tokenizer, tokenizer_from_json
 from keras.layers import Concatenate, Dense, Dot, Input, Layer, RepeatVector
 
-MODEL_PATH = './models/translator/translator_with_attention2.keras'
-LOSS_PATH = './evaluation/translator_with_attention_loss_40_to_60.png'
+MODEL_PATH = './models/translator/translator_with_attention.keras'
+LOSS_PATH = './evaluation/translator_with_attention_loss_40_to_140.png'
+TOKENIZER_INPUTS_PATH = './training/tokenizer_inputs.json'
+TOKENIZER_OUTPUTS_PATH = './training/tokenizer_outputs.json'
+CHECKPOINT_PATH = './models/translator/translator_with_attention_checkpoint.keras'
 
-NUM_TRAINING_SAMPLES = 25000
-NUM_TEST_SAMPLES = 10000
+
+NUM_TRAINING_SAMPLES = 20000
+TRAINING_SAMPLES_START = 0
+NUM_TEST_SAMPLES = 5000
 MAX_VOCAB_SIZE = 20000
-MAX_SEQUENCE_LENGTH = 100
+MAX_SEQUENCE_LENGTH = 30
 BATCH_SIZE = 256
-EPOCHS = 20
+EPOCHS = 100
 
 
 class Slice(Layer):
@@ -47,7 +54,7 @@ def softmax_over_time(x):
 
 model = load_model(MODEL_PATH, compile=True, custom_objects={
     "softmax_over_time": softmax_over_time, "Slice": Slice})
-max_len_target = model.get_layer('encoder_input').input.shape[1]
+max_len_target = model.get_layer('decoder_input').input.shape[1]
 
 
 def decode_sequence(input_seq, idx2word_trans, latent_dim_decoder):
@@ -90,39 +97,47 @@ target_texts_inputs = []
 t = 0
 
 for line in open('./datasets/spa.txt', encoding='utf8'):
-    t += 1
-    line = line.rstrip()
-    if t > NUM_TRAINING_SAMPLES:
+
+    if t >= NUM_TRAINING_SAMPLES + TRAINING_SAMPLES_START:
         break
 
-    if '\t' not in line:
-        continue
+    if t >= TRAINING_SAMPLES_START:
+        line = line.rstrip()
 
-    input_text, translation, _ = line.split('\t')
+        if '\t' not in line:
+            continue
 
-    target_line = translation + ' <eos>'
-    target_line_input = '<sos> ' + translation
+        input_text, translation, _ = line.split('\t')
 
-    input_texts.append(input_text)
-    target_texts.append(target_line)
-    target_texts_inputs.append(target_line_input)
+        target_line = translation + ' <eos>'
+        target_line_input = '<sos> ' + translation
+
+        input_texts.append(input_text)
+        target_texts.append(target_line)
+        target_texts_inputs.append(target_line_input)
+
+    t += 1
 
 
 # convert the sentences (strings) into integers
-tokenizer_inputs = Tokenizer(num_words=MAX_VOCAB_SIZE, filters='')
-tokenizer_inputs.fit_on_texts(input_texts)
-input_sequences = tokenizer_inputs.texts_to_sequences(input_texts)
+print("t = ", t)
+print("target_texts len = ", len(target_texts))
 
-tokenizer_outputs = Tokenizer(num_words=MAX_VOCAB_SIZE, filters='')
-tokenizer_outputs.fit_on_texts(target_texts + target_texts_inputs)
+# load tokenizer jsons
+
+with open(TOKENIZER_INPUTS_PATH, encoding='utf-8') as f:
+    data = json.load(f)
+    tokenizer_inputs = tokenizer_from_json(data)
+
+
+with open(TOKENIZER_OUTPUTS_PATH, encoding='utf-8') as f:
+    data = json.load(f)
+    tokenizer_outputs = tokenizer_from_json(data)
+
+input_sequences = tokenizer_inputs.texts_to_sequences(input_texts)
 target_sequences = tokenizer_outputs.texts_to_sequences(target_texts)
 target_sequences_inputs = tokenizer_outputs.texts_to_sequences(
     target_texts_inputs)
-
-# find max seq length
-max_len_input = len(max(input_sequences, key=len))
-print("max input sequence: ", max_len_input)
-
 
 # get word -> integer mapping
 word2idx_inputs = tokenizer_inputs.word_index
@@ -130,33 +145,38 @@ word2idx_outputs = tokenizer_outputs.word_index
 idx2word_trans = {v: k for k, v in word2idx_outputs.items()}
 
 # pad sequences so that we get a N x T matrix
-max_len_input = min(max_len_input, MAX_SEQUENCE_LENGTH)
+max_len_input = model.get_layer('encoder_input').input.shape[1]
 
 encoder_inputs = pad_sequences(input_sequences,
-                               maxlen=6)
+                               maxlen=max_len_input)
 
-max_len_target = len(max(target_sequences, key=len))
-max_len_target = min(max_len_target, MAX_SEQUENCE_LENGTH)
 decoder_inputs = pad_sequences(
     target_sequences_inputs, maxlen=max_len_target, padding='post')
 
 decoder_targets = pad_sequences(target_sequences,
                                 maxlen=max_len_target,
-                                padding='post')
-decoder_targets_one_hot = to_categorical(decoder_targets)
+                                padding='post',
+                                truncating='post')
+
+num_words_output = len(word2idx_outputs) + 1
+decoder_targets_one_hot = to_categorical(
+    decoder_targets, num_classes=num_words_output)
 
 initial_s = model.get_layer('s0')
 latent_dim_decoder = initial_s.input.shape[1]
 initial_c = model.get_layer('c0')
 z = np.zeros((len(encoder_inputs), latent_dim_decoder))
 
+model_checkpoint = ModelCheckpoint(
+    filepath=CHECKPOINT_PATH, save_weights_only=False, monitor='val_loss', save_best_only=True)
+
 r = model.fit([encoder_inputs, decoder_inputs, z, z], decoder_targets_one_hot,
-              batch_size=BATCH_SIZE, validation_split=0.2, epochs=EPOCHS, shuffle=True, use_multiprocessing=True, verbose=2)
+              batch_size=BATCH_SIZE, validation_split=0.2, epochs=EPOCHS, shuffle=True, use_multiprocessing=True, verbose=1, callbacks=[model_checkpoint])
 
 plt.plot(r.history['loss'], label='loss')
 plt.plot(r.history['val_loss'], label='val_loss', color='red')
 plt.legend()
 
 plt.savefig(LOSS_PATH)
-model.save(MODEL_PATH)
+model.save('./models/translator/translator_with_attention_toda_la_noche.keras')
 plt.show()

@@ -1,13 +1,13 @@
+import json
 import tensorflow as tf
 from tensorflow.python.keras import backend as K
 from keras.layers import LSTM, Concatenate, Dense, Embedding, Input, Bidirectional, Lambda, Layer, RepeatVector, Dot
 from keras.models import Model
-from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.text import Tokenizer, tokenizer_from_json
 from keras.utils import pad_sequences, to_categorical, Sequence
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import pandas as pd
 
 try:
     from tensorflow.python.keras import backend as K
@@ -22,8 +22,9 @@ except:
 
 MAX_VOCAB_SIZE = 20000
 MAX_VOCAB_SIZE_SPANISH = 50000
-MAX_SEQUENCE_LENGTH = 100
-EMBEDDING_DIM = 300
+MAX_SEQUENCE_LENGTH_INPUT = 100
+MAX_SEQUENCE_LENGTH_OUTPUT = 100
+EMBEDDING_DIM = 100
 EMBEDDING_DIM_SPANISH = 300
 LATENT_DIM = 256
 LATENT_DIM_DECODER = 256
@@ -31,8 +32,13 @@ BATCH_SIZE = 256
 VALIDATION_SPLIT = 0.2
 EPOCHS = 20
 NUM_SAMPLES = 25000
+TRAINING_SAMPLES_START = 0
 
-MODEL_PATH = './models/translator/translator_with_attention2.keras'
+MODEL_PATH = './models/translator/translator_with_attention.keras'
+LOSS_PATH = './evaluation/translator_with_attention_loss_0_to_10.png'
+TOKENIZER_INPUTS_PATH = './training/tokenizer_inputs.json'
+TOKENIZER_OUTPUTS_PATH = './training/tokenizer_outputs.json'
+PARAMETERS_PATH = './training/parameters.json'
 
 
 class Slice(Layer):
@@ -68,57 +74,76 @@ target_texts_inputs = []
 t = 0
 
 for line in open('./datasets/spa.txt', encoding='utf8'):
-    t += 1
-    line = line.rstrip()
-    if t > NUM_SAMPLES:
+
+    if t >= NUM_SAMPLES + TRAINING_SAMPLES_START:
         break
+    if t >= TRAINING_SAMPLES_START:
+        line = line.rstrip()
 
-    if '\t' not in line:
-        continue
+        if '\t' not in line:
+            continue
 
-    input_text, translation, _ = line.split('\t')
+        input_text, translation, _ = line.split('\t')
 
-    target_line = translation + ' <eos>'
-    target_line_input = '<sos> ' + translation
+        target_line = translation + ' <eos>'
+        target_line_input = '<sos> ' + translation
 
-    input_texts.append(input_text)
-    target_texts.append(target_line)
-    target_texts_inputs.append(target_line_input)
+        input_texts.append(input_text)
+        target_texts.append(target_line)
+        target_texts_inputs.append(target_line_input)
+
+    t += 1
 
 
-# convert the sentences (strings) into integers
+# Load tokenizers
+# with open(TOKENIZER_INPUTS_PATH, encoding='utf-8') as f:
+#     data = json.load(f)
+#     tokenizer_inputs = tokenizer_from_json(data)
+#
+#
+# with open(TOKENIZER_OUTPUTS_PATH, encoding='utf-8') as f:
+#     data = json.load(f)
+#     tokenizer_outputs = tokenizer_from_json(data)
+
 tokenizer_inputs = Tokenizer(num_words=MAX_VOCAB_SIZE, filters='')
 tokenizer_inputs.fit_on_texts(input_texts)
+
+tokenizer_outputs = Tokenizer(num_words=MAX_VOCAB_SIZE_SPANISH, filters='')
+tokenizer_outputs.fit_on_texts(target_texts + target_texts_inputs)
+# convert the sentences (strings) into integers
 input_sequences = tokenizer_inputs.texts_to_sequences(input_texts)
 
-tokenizer_outputs = Tokenizer(num_words=MAX_VOCAB_SIZE, filters='')
-tokenizer_outputs.fit_on_texts(target_texts + target_texts_inputs)
 target_sequences = tokenizer_outputs.texts_to_sequences(target_texts)
 target_sequences_inputs = tokenizer_outputs.texts_to_sequences(
     target_texts_inputs)
 
-# find max seq length
-max_len_input = len(max(input_sequences, key=len))
-print("max input sequence: ", max_len_input)
 
+# Load dataset parameters
+# with open(PARAMETERS_PATH, encoding='utf-8') as f:
+#     parameters_data = json.load(f)
+
+max_len_input = len(max(input_sequences, key=len))
+
+# max_len_input = parameters_data['max_len_input']
+max_len_input = min(max_len_input, MAX_SEQUENCE_LENGTH_INPUT)
+print("max input sequence: ", max_len_input)
 
 # get word -> integer mapping
 word2idx_inputs = tokenizer_inputs.word_index
 word2idx_outputs = tokenizer_outputs.word_index
 
 # pad sequences so that we get a N x T matrix
-max_len_input = min(max_len_input, MAX_SEQUENCE_LENGTH)
 
 encoder_inputs = pad_sequences(input_sequences,
-                               maxlen=max_len_input)
+                               maxlen=max_len_input, truncating='post')
 
+# max_len_target = parameters_data['max_len_target']
 max_len_target = len(max(target_sequences, key=len))
+max_len_target = min(max_len_target, MAX_SEQUENCE_LENGTH_OUTPUT)
 print("max target sequence: ", max_len_target)
 
-max_len_target = min(max_len_target, MAX_SEQUENCE_LENGTH)
-
 decoder_inputs = pad_sequences(
-    target_sequences_inputs, maxlen=max_len_target, padding='post')
+    target_sequences_inputs, maxlen=max_len_target, padding='post', truncating='post')
 
 decoder_targets = pad_sequences(target_sequences,
                                 maxlen=max_len_target,
@@ -132,8 +157,6 @@ with open(os.path.join('./datasets/glove.6B.%sd.txt' % EMBEDDING_DIM), encoding=
         word = values[0]
         vec = np.asarray(values[1:], dtype='float32')
         word2vec[word] = vec
-
-print("number of words = ", len(word2vec))
 
 # prepare embedding matrix
 num_words = min(MAX_VOCAB_SIZE, len(word2vec) + 1)
@@ -152,13 +175,22 @@ embeding_layer = Embedding(num_words, EMBEDDING_DIM, weights=[
 word2vec_spanish = {}
 with open(os.path.join('./datasets/wiki.es.vec'), encoding='utf8') as f:
     f.readline()
-    for i, line in enumerate(f):
-        if i >= MAX_VOCAB_SIZE_SPANISH:
-            break
+    for line in f:
         values = line.split()
-        word = values[0]
-        vec = np.asarray(values[1:], dtype='float32')
+        word = ' '.join(values[0:len(values) - 300])
+        vec = np.asarray(values[-300:], dtype='float32')
         word2vec_spanish[word] = vec
+
+# word2vec_spanish = {}
+# with open(os.path.join('./datasets/wiki.es.vec'), encoding='utf8') as f:
+#     f.readline()
+#     for line in f:
+#         if i >= MAX_VOCAB_SIZE_SPANISH:
+#             break
+#         values = line.split()
+#         word = values[0]
+#         vec = np.asarray(values[1:], dtype='float32')
+#         word2vec_spanish[word] = vec
 
 # prepare embedding matrix
 num_words_spanish = min(MAX_VOCAB_SIZE_SPANISH, len(word2vec_spanish) + 1)
@@ -169,7 +201,6 @@ for word, i in word2idx_outputs.items():
         if vec is not None:
             embedding_matrix_target[i] = vec
 
-print("number of words = ", len(word2vec_spanish))
 print("number of samples = ", NUM_SAMPLES)
 
 # create targets, since we cannot use sparse
@@ -177,6 +208,7 @@ print("number of samples = ", NUM_SAMPLES)
 # one hot encoding
 
 num_words_output = len(word2idx_outputs) + 1
+# num_words_output = 20000
 decoder_targets_one_hot = to_categorical(decoder_targets)
 
 # decoder_targets_one_hot = np.zeros(
@@ -187,8 +219,9 @@ decoder_targets_one_hot = to_categorical(decoder_targets)
 #     ),
 #     dtype='float32'
 # )
-
-# assign the values
+#
+#
+# # assign the values
 # for i, d in enumerate(decoder_targets):
 #     for t, word in enumerate(d):
 #         if word != 0:
@@ -199,10 +232,10 @@ decoder_targets_one_hot = to_categorical(decoder_targets)
 ######### ENCODER LAYERS #########
 encoder_inputs_placeholder = Input(
     shape=(max_len_input,), name='encoder_input')
-encoder_outputs = embeding_layer(encoder_inputs_placeholder)
+x = embeding_layer(encoder_inputs_placeholder)
 encoder = Bidirectional(
     LSTM(units=LATENT_DIM, return_sequences=True), name='encoder_lstm')
-encoder_outputs = encoder(encoder_outputs)
+encoder_outputs = encoder(x)
 
 
 ######### ATTENTION LAYERS #########
@@ -229,6 +262,7 @@ decoder_inputs_placeholder = Input(
     shape=(max_len_target,), name='decoder_input')
 decoder_embedding = Embedding(num_words_spanish, EMBEDDING_DIM_SPANISH, weights=[
                               embedding_matrix_target], name='decoder_embedding')
+# decoder_embedding = Embedding(num_words_spanish, 100, name='decoder_embedding')
 decoder_inputs_x = decoder_embedding(decoder_inputs_placeholder)
 decoder_lstm = LSTM(units=LATENT_DIM_DECODER,
                     return_state=True, name='decoder_lstm')
@@ -255,7 +289,6 @@ for target in range(max_len_target):  # Ty times
     selector = Slice(begin=[0, target, 0],
                      size=[-1, 1, -1], name=f'selector_{target}')
     xt = selector(decoder_inputs_x)
-    print("xt = ", xt)
 
     # Combine
     decoder_lstm_input = context_last_word_concat_layer([context, xt])
@@ -303,15 +336,24 @@ model.compile(
     metrics=['accuracy']
 )
 
+print(model.summary())
 z = np.zeros((len(encoder_inputs), LATENT_DIM_DECODER))
-model.summary()
-print(model.get_config())
 r = model.fit([encoder_inputs, decoder_inputs, z, z], decoder_targets_one_hot,
               batch_size=BATCH_SIZE, validation_split=0.2, epochs=EPOCHS, shuffle=True, use_multiprocessing=True, verbose=2)
 
 plt.plot(r.history['loss'], label='loss')
 plt.plot(r.history['val_loss'], label='val_loss', color='red')
 plt.legend()
-plt.show()
 
+plt.savefig(LOSS_PATH)
 model.save(MODEL_PATH)
+
+with open(TOKENIZER_INPUTS_PATH, 'w', encoding='utf-8') as f:
+    tokenizer_json = tokenizer_inputs.to_json()
+    json.dump(tokenizer_json, f, ensure_ascii=False, indent=4)
+
+with open(TOKENIZER_OUTPUTS_PATH, 'w', encoding='utf-8') as f:
+    tokenizer_json = tokenizer_outputs.to_json()
+    json.dump(tokenizer_json, f, ensure_ascii=False, indent=4)
+
+plt.show()

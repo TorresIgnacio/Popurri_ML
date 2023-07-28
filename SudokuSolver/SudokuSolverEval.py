@@ -12,9 +12,10 @@ BATCH_SIZE = 640
 TEST_SIZE = 0.2
 VAL_SIZE = 0.2
 DATA_LEN = 1000000
-NUMBER_OF_TESTS = 10
+NUMBER_OF_TESTS = 100
 NUMBER_OF_BATCHES = 1
 MODEL_PATH = "./SudokuSolver/Models/SudokuSolverMostAccurateModel"
+LOSSES_PATH = "./SudokuSolver/SudokuModelLosses6.csv"
 
 
 class DataGenerator(keras.utils.Sequence):
@@ -63,9 +64,7 @@ def denorm(a):
 
 
 def inference_sudoku(sample, debug=False):
-    '''
-        This function solve the sudoku by filling blank positions one by one.
-    '''
+
     start_time = time.perf_counter()
     PROB_THRESHOLD = 0.991
     feat = copy.copy(sample)
@@ -140,6 +139,23 @@ def main():
     sudoku_df = pd.read_csv('./datasets/sudoku.csv')
     print(sudoku_df.head())
     print(sudoku_df.info())
+
+    losses = pd.read_csv(LOSSES_PATH)
+    losses.drop('Unnamed: 0', axis=1, inplace=True)
+    plt.figure(figsize=(10, 10))
+    ax1 = plt.subplot(2, 1, 1)
+    ax2 = plt.subplot(2, 1, 2)
+    ax1.plot(losses['loss'], label='loss')
+    ax1.plot(losses['val_loss'], label='val_loss')
+    ax1.set_ylabel('LOSS')
+    ax1.set_xlabel('EPOCHS')
+    ax1.legend()
+    ax2.plot(losses['sparse_categorical_accuracy'], label='accuracy')
+    ax2.plot(losses['val_sparse_categorical_accuracy'], label='val_accuracy')
+    ax2.set_ylabel('ACCURACY')
+    ax2.set_xlabel('EPOCHS')
+    ax2.legend()
+    plt.show(block=False)
 
     sudoku_digested = sudoku_df.head(DATA_LEN)
 

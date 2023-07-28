@@ -1,18 +1,22 @@
+import json
 from keras.backend import flatten
 import tensorflow as tf
 import numpy as np
 from tensorflow.python.keras import backend as K
 from keras.models import load_model, Model
 from keras.utils import pad_sequences
-from keras.preprocessing.text import Tokenizer
+from keras.preprocessing.text import Tokenizer, tokenizer_from_json
 from keras.layers import Concatenate, Dense, Dot, Input, Layer, RepeatVector
 
-MODEL_PATH = './models/translator/translator_with_attention2.keras'
+MODEL_PATH = './models/translator/translator_with_attention_toda_la_noche.keras'
+TOKENIZER_INPUTS_PATH = './training/tokenizer_inputs.json'
+TOKENIZER_OUTPUTS_PATH = './training/tokenizer_outputs.json'
 
-NUM_TRAINING_SAMPLES = 25000
+NUM_TRAINING_SAMPLES = 20000
+TRAINING_SAMPLES_START = 0
 NUM_TEST_SAMPLES = 10000
-MAX_VOCAB_SIZE = 20000
-MAX_SEQUENCE_LENGTH = 100
+MAX_SEQUENCE_LENGTH_INPUT = 30
+MAX_SEQUENCE_LENGTH_OUTPUT = 30
 
 
 class Slice(Layer):
@@ -43,7 +47,7 @@ def softmax_over_time(x):
 
 model = load_model(MODEL_PATH, compile=True, custom_objects={
     "softmax_over_time": softmax_over_time, "Slice": Slice})
-max_len_target = model.get_layer('encoder_input').input.shape[1]
+max_len_target = model.get_layer('decoder_input').input.shape[1]
 
 
 def decode_sequence(input_seq, idx2word_trans, latent_dim_decoder):
@@ -86,59 +90,62 @@ target_texts_inputs = []
 t = 0
 
 for line in open('./datasets/spa.txt', encoding='utf8'):
-    t += 1
-    line = line.rstrip()
-    if t > NUM_TRAINING_SAMPLES:
+
+    if t >= NUM_TRAINING_SAMPLES + TRAINING_SAMPLES_START:
         break
+    if t >= TRAINING_SAMPLES_START:
+        line = line.rstrip()
 
-    if '\t' not in line:
-        continue
+        if '\t' not in line:
+            continue
 
-    input_text, translation, _ = line.split('\t')
+        input_text, translation, _ = line.split('\t')
 
-    target_line = translation + ' <eos>'
-    target_line_input = '<sos> ' + translation
+        target_line = translation + ' <eos>'
+        target_line_input = '<sos> ' + translation
 
-    input_texts.append(input_text)
-    target_texts.append(target_line)
-    target_texts_inputs.append(target_line_input)
+        input_texts.append(input_text)
+        target_texts.append(target_line)
+        target_texts_inputs.append(target_line_input)
 
+    t += 1
+
+
+# load tokenizer jsons
+
+with open(TOKENIZER_INPUTS_PATH, encoding='utf-8') as f:
+    data = json.load(f)
+    tokenizer_inputs = tokenizer_from_json(data)
+
+
+with open(TOKENIZER_OUTPUTS_PATH, encoding='utf-8') as f:
+    data = json.load(f)
+    tokenizer_outputs = tokenizer_from_json(data)
 
 # convert the sentences (strings) into integers
-tokenizer_inputs = Tokenizer(num_words=MAX_VOCAB_SIZE, filters='')
-tokenizer_inputs.fit_on_texts(input_texts)
 input_sequences = tokenizer_inputs.texts_to_sequences(input_texts)
-
-tokenizer_outputs = Tokenizer(num_words=MAX_VOCAB_SIZE, filters='')
-tokenizer_outputs.fit_on_texts(target_texts + target_texts_inputs)
 target_sequences = tokenizer_outputs.texts_to_sequences(target_texts)
 target_sequences_inputs = tokenizer_outputs.texts_to_sequences(
     target_texts_inputs)
-
-# find max seq length
-max_len_input = len(max(input_sequences, key=len))
-print("max input sequence: ", max_len_input)
-
 
 # get word -> integer mapping
 word2idx_inputs = tokenizer_inputs.word_index
 word2idx_outputs = tokenizer_outputs.word_index
 idx2word_trans = {v: k for k, v in word2idx_outputs.items()}
 
-# pad sequences so that we get a N x T matrix
-max_len_input = min(max_len_input, MAX_SEQUENCE_LENGTH)
-
-encoder_inputs = pad_sequences(input_sequences,
-                               maxlen=6)
 
 # Models
 
-print(model.get_config())
 
 # Get layers from model
 encoder = model.get_layer('encoder_lstm')
 encoder_inputs_placeholder = model.get_layer('encoder_input').input
 embedding_layer = model.get_layer('embedding')
+
+max_len_input = encoder_inputs_placeholder.shape[1]
+encoder_inputs = pad_sequences(input_sequences,
+                               maxlen=max_len_input)
+
 initial_s = model.get_layer('s0')
 latent_dim_decoder = initial_s.input.shape[1]
 initial_s = initial_s.output
@@ -212,7 +219,7 @@ while True:
         break
 
 while True:
-    input_text = [input("Ingresar frase en ingles\n")]
+    input_text = [input("Ingresar frase en ingles:\n")]
     input_seq = tokenizer_inputs.texts_to_sequences(input_text)
     input_seq = pad_sequences(input_seq, maxlen=max_len_input)
 
@@ -220,6 +227,6 @@ while True:
         input_seq, idx2word_trans=idx2word_trans, latent_dim_decoder=latent_dim_decoder)
     print(f"-\nInput: {input_text}\nTranslation: {translation}")
 
-    ans = input("Continue? [Y/n]")
-    if ans and ans.lower().startswith('n'):
-        break
+    # ans = input("Continue? [Y/n]")
+    # if ans and ans.lower().startswith('n'):
+    #     break
